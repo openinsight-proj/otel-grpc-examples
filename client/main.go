@@ -16,7 +16,9 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	api "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/example/api"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -24,17 +26,33 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.10.0"
-	"io"
-	"log"
-	"os"
-	"time"
-
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/example/api"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"log"
+	"net"
+	"net/http"
+	"os"
 )
+
+const (
+	port = ":8080"
+)
+
+func helloServiceClient() api.HelloServiceClient {
+	// make grpc client call
+	var conn *grpc.ClientConn
+	conn, err := grpc.Dial(":7777", grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor()),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor()),
+	)
+
+	if err != nil {
+		log.Fatalf("did not connect: %s", err)
+	}
+	//defer func() { _ = conn.Close() }()
+
+	return api.NewHelloServiceClient(conn)
+}
 
 func main() {
 	tp, err := Init()
@@ -47,142 +65,48 @@ func main() {
 		}
 	}()
 
-	var conn *grpc.ClientConn
-	conn, err = grpc.Dial(":7777", grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor()),
-		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor()),
+	// start up grpc gateway handler
+	lis, err := net.Listen("tcp", port)
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+
+	s := grpc.NewServer(
+		grpc.UnaryInterceptor(otelgrpc.UnaryServerInterceptor()),
+		grpc.StreamInterceptor(otelgrpc.StreamServerInterceptor()),
 	)
+	api.RegisterHelloServiceServer(s, &server{c: helloServiceClient()})
 
-	if err != nil {
-		log.Fatalf("did not connect: %s", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	c := api.NewHelloServiceClient(conn)
-
-	if err := callSayHello(c); err != nil {
-		log.Fatal(err)
-	}
-	if err := callSayHelloClientStream(c); err != nil {
-		log.Fatal(err)
-	}
-	if err := callSayHelloServerStream(c); err != nil {
-		log.Fatal(err)
-	}
-	if err := callSayHelloBidiStream(c); err != nil {
-		log.Fatal(err)
-	}
-
-	time.Sleep(10 * time.Millisecond)
-}
-
-func callSayHello(c api.HelloServiceClient) error {
-	response, err := c.SayHello(context.Background(), &api.HelloRequest{Greeting: "World"})
-	if err != nil {
-		return fmt.Errorf("calling SayHello: %w", err)
-	}
-	log.Printf("Response from server: %s", response.Reply)
-	return nil
-}
-
-func callSayHelloClientStream(c api.HelloServiceClient) error {
-	stream, err := c.SayHelloClientStream(context.Background())
-	if err != nil {
-		return fmt.Errorf("opening SayHelloClientStream: %w", err)
-	}
-
-	for i := 0; i < 5; i++ {
-		err := stream.Send(&api.HelloRequest{Greeting: "World"})
-
-		time.Sleep(time.Duration(i*50) * time.Millisecond)
-
-		if err != nil {
-			return fmt.Errorf("sending to SayHelloClientStream: %w", err)
-		}
-	}
-
-	response, err := stream.CloseAndRecv()
-	if err != nil {
-		return fmt.Errorf("closing SayHelloClientStream: %w", err)
-	}
-
-	log.Printf("Response from server: %s", response.Reply)
-	return nil
-}
-
-func callSayHelloServerStream(c api.HelloServiceClient) error {
-
-	stream, err := c.SayHelloServerStream(context.Background(), &api.HelloRequest{Greeting: "World"})
-	if err != nil {
-		return fmt.Errorf("opening SayHelloServerStream: %w", err)
-	}
-
-	for {
-		response, err := stream.Recv()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			return fmt.Errorf("receiving from SayHelloServerStream: %w", err)
-		}
-
-		log.Printf("Response from server: %s", response.Reply)
-		time.Sleep(50 * time.Millisecond)
-	}
-	return nil
-}
-
-func callSayHelloBidiStream(c api.HelloServiceClient) error {
-
-	stream, err := c.SayHelloBidiStream(context.Background())
-	if err != nil {
-		return fmt.Errorf("opening SayHelloBidiStream: %w", err)
-	}
-
-	serverClosed := make(chan struct{})
-	clientClosed := make(chan struct{})
-
+	log.Println("Serving gRPC on 0.0.0.0:8080")
 	go func() {
-		for i := 0; i < 5; i++ {
-			err := stream.Send(&api.HelloRequest{Greeting: "World"})
-
-			if err != nil {
-				// nolint: revive  // This acts as its own main func.
-				log.Fatalf("Error when sending to SayHelloBidiStream: %s", err)
-			}
-
-			time.Sleep(50 * time.Millisecond)
+		if err := s.Serve(lis); err != nil {
+			log.Fatalf("failed to serve: %v", err)
 		}
-
-		err := stream.CloseSend()
-		if err != nil {
-			// nolint: revive  // This acts as its own main func.
-			log.Fatalf("Error when closing SayHelloBidiStream: %s", err)
-		}
-
-		clientClosed <- struct{}{}
 	}()
+	// Create a client connection to the gRPC server we just started
+	// This is where the gRPC-Gateway proxies the requests
+	proxyConn, err := grpc.DialContext(
+		context.Background(),
+		"0.0.0.0:8080",
+		grpc.WithBlock(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		log.Fatalln("Failed to dial server:", err)
+	}
+	gwmux := runtime.NewServeMux()
+	// Register Greeter
+	err = api.RegisterHelloServiceHandler(context.Background(), gwmux, proxyConn)
+	if err != nil {
+		log.Fatalln("Failed to register gateway:", err)
+	}
 
-	go func() {
-		for {
-			response, err := stream.Recv()
-			if err == io.EOF {
-				break
-			} else if err != nil {
-				// nolint: revive  // This acts as its own main func.
-				log.Fatalf("Error when receiving from SayHelloBidiStream: %s", err)
-			}
-
-			log.Printf("Response from server: %s", response.Reply)
-			time.Sleep(50 * time.Millisecond)
-		}
-
-		serverClosed <- struct{}{}
-	}()
-
-	// Wait until client and server both closed the connection.
-	<-clientClosed
-	<-serverClosed
-	return nil
+	gwServer := &http.Server{
+		Addr:    ":8090",
+		Handler: gwmux,
+	}
+	log.Println("Serving gRPC-Gateway on http://0.0.0.0:8090")
+	log.Fatalln(gwServer.ListenAndServe())
 }
 
 // Init configures an OpenTelemetry exporter and trace provider.
@@ -208,7 +132,7 @@ func Init() (*sdktrace.TracerProvider, error) {
 		resource.WithHost(),
 		resource.WithAttributes(
 			// the service name used to display traces in backends
-			semconv.ServiceNameKey.String("demo-client-no-metadata"),
+			semconv.ServiceNameKey.String("demo-client-gateway-no-metadata"),
 		),
 	)
 	handleErr(err, "failed to create resource")

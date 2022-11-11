@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	api "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/example/api"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
@@ -34,8 +35,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/example/api"
-
 	"google.golang.org/grpc"
 )
 
@@ -178,7 +177,7 @@ func Init() (*sdktrace.TracerProvider, error) {
 		resource.WithHost(),
 		resource.WithAttributes(
 			// the service name used to display traces in backends
-			semconv.ServiceNameKey.String("demo-server-no-metadata"),
+			semconv.ServiceNameKey.String("demo-server-gateway-no-metadata"),
 		),
 	)
 	handleErr(err, "failed to create resource")
