@@ -18,12 +18,12 @@ import (
 	"context"
 	"fmt"
 	api "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/example/api"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpgrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.10.0"
+	"go.opentelemetry.io/otel/semconv"
 	"io"
 	"log"
 	"net"
@@ -128,15 +128,8 @@ func (s *server) SayHelloBidiStream(stream api.HelloService_SayHelloBidiStreamSe
 }
 
 func main() {
-	tp, err := Init()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() {
-		if err := tp.Shutdown(context.Background()); err != nil {
-			log.Printf("Error shutting down tracer provider: %v", err)
-		}
-	}()
+	shutdown := Init()
+	defer shutdown()
 
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
@@ -155,34 +148,31 @@ func main() {
 }
 
 // Init configures an OpenTelemetry exporter and trace provider.
-func Init() (*sdktrace.TracerProvider, error) {
+func Init() func() {
 	ctx := context.Background()
-
 	otelAgentAddr, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if !ok {
 		otelAgentAddr = "0.0.0.0:4317"
 	}
-
-	traceClient := otlptracegrpc.NewClient(
-		otlptracegrpc.WithInsecure(),
-		otlptracegrpc.WithEndpoint(otelAgentAddr),
-		otlptracegrpc.WithDialOption(grpc.WithBlock()))
-	traceExp, err := otlptrace.New(ctx, traceClient)
-	handleErr(err, "Failed to create the collector trace exporter")
-
+	// If the OpenTelemetry Collector is running on a local cluster (minikube or
+	// microk8s), it should be accessible through the NodePort service at the
+	// `localhost:30080` endpoint. Otherwise, replace `localhost` with the
+	// endpoint of your cluster. If you run the app inside k8s, then you can
+	// probably connect directly to the service through dns
+	driver := otlpgrpc.NewDriver(
+		otlpgrpc.WithInsecure(),
+		otlpgrpc.WithEndpoint(otelAgentAddr),
+		otlpgrpc.WithDialOption(grpc.WithBlock()), // useful for testing
+	)
+	exp, err := otlp.NewExporter(ctx, driver)
+	handleErr(err, "failed to create exporter")
 	res, err := resource.New(ctx,
-		resource.WithFromEnv(),
-		resource.WithProcess(),
-		resource.WithTelemetrySDK(),
-		resource.WithHost(),
 		resource.WithAttributes(
 			// the service name used to display traces in backends
-			semconv.ServiceNameKey.String("demo-server-gateway-no-metadata"),
+			semconv.ServiceNameKey.String("demo-server-grpc-gateway-v0.20.0"),
 		),
 	)
-	handleErr(err, "failed to create resource")
-
-	bsp := sdktrace.NewBatchSpanProcessor(traceExp)
+	bsp := sdktrace.NewBatchSpanProcessor(exp)
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithResource(res),
@@ -190,10 +180,13 @@ func Init() (*sdktrace.TracerProvider, error) {
 	)
 
 	// set global propagator to tracecontext (the default is no-op).
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 	otel.SetTracerProvider(tracerProvider)
 
-	return tracerProvider, nil
+	return func() {
+		// Shutdown will flush any remaining spans and shut down the exporter.
+		handleErr(tracerProvider.Shutdown(ctx), "failed to shutdown TracerProvider")
+	}
 }
 
 func handleErr(err error, message string) {
