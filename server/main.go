@@ -178,7 +178,7 @@ func Init() (*sdktrace.TracerProvider, error) {
 		resource.WithHost(),
 		resource.WithAttributes(
 			// the service name used to display traces in backends
-			semconv.ServiceNameKey.String("demo-server"),
+			semconv.ServiceNameKey.String("demo-server-no-metadata"),
 		),
 	)
 	handleErr(err, "failed to create resource")

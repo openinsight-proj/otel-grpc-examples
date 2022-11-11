@@ -34,7 +34,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 )
 
 func main() {
@@ -78,14 +77,7 @@ func main() {
 }
 
 func callSayHello(c api.HelloServiceClient) error {
-	md := metadata.Pairs(
-		"timestamp", time.Now().Format(time.StampNano),
-		"client-id", "web-api-client-us-east-1",
-		"user-id", "some-test-user-id",
-	)
-
-	ctx := metadata.NewOutgoingContext(context.Background(), md)
-	response, err := c.SayHello(ctx, &api.HelloRequest{Greeting: "World"})
+	response, err := c.SayHello(context.Background(), &api.HelloRequest{Greeting: "World"})
 	if err != nil {
 		return fmt.Errorf("calling SayHello: %w", err)
 	}
@@ -94,14 +86,7 @@ func callSayHello(c api.HelloServiceClient) error {
 }
 
 func callSayHelloClientStream(c api.HelloServiceClient) error {
-	md := metadata.Pairs(
-		"timestamp", time.Now().Format(time.StampNano),
-		"client-id", "web-api-client-us-east-1",
-		"user-id", "some-test-user-id",
-	)
-
-	ctx := metadata.NewOutgoingContext(context.Background(), md)
-	stream, err := c.SayHelloClientStream(ctx)
+	stream, err := c.SayHelloClientStream(context.Background())
 	if err != nil {
 		return fmt.Errorf("opening SayHelloClientStream: %w", err)
 	}
@@ -126,14 +111,8 @@ func callSayHelloClientStream(c api.HelloServiceClient) error {
 }
 
 func callSayHelloServerStream(c api.HelloServiceClient) error {
-	md := metadata.Pairs(
-		"timestamp", time.Now().Format(time.StampNano),
-		"client-id", "web-api-client-us-east-1",
-		"user-id", "some-test-user-id",
-	)
 
-	ctx := metadata.NewOutgoingContext(context.Background(), md)
-	stream, err := c.SayHelloServerStream(ctx, &api.HelloRequest{Greeting: "World"})
+	stream, err := c.SayHelloServerStream(context.Background(), &api.HelloRequest{Greeting: "World"})
 	if err != nil {
 		return fmt.Errorf("opening SayHelloServerStream: %w", err)
 	}
@@ -153,14 +132,8 @@ func callSayHelloServerStream(c api.HelloServiceClient) error {
 }
 
 func callSayHelloBidiStream(c api.HelloServiceClient) error {
-	md := metadata.Pairs(
-		"timestamp", time.Now().Format(time.StampNano),
-		"client-id", "web-api-client-us-east-1",
-		"user-id", "some-test-user-id",
-	)
 
-	ctx := metadata.NewOutgoingContext(context.Background(), md)
-	stream, err := c.SayHelloBidiStream(ctx)
+	stream, err := c.SayHelloBidiStream(context.Background())
 	if err != nil {
 		return fmt.Errorf("opening SayHelloBidiStream: %w", err)
 	}
@@ -235,7 +208,7 @@ func Init() (*sdktrace.TracerProvider, error) {
 		resource.WithHost(),
 		resource.WithAttributes(
 			// the service name used to display traces in backends
-			semconv.ServiceNameKey.String("demo-client"),
+			semconv.ServiceNameKey.String("demo-client-no-metadata"),
 		),
 	)
 	handleErr(err, "failed to create resource")
